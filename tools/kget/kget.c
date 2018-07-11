@@ -660,8 +660,7 @@ static rc_t full_download( KDirectory *dir, fetch_ctx *ctx )
         else
         {
             struct URLBlock url;
-            URLBlockInit( &url );
-            rc = ParseUrl( &url, ctx->url, string_size( ctx->url ) );
+            rc = URLBlockInit( &url, ctx->url, string_size( ctx->url ) );
             if ( rc == 0 )
             {
                 KClientHttp * http;
@@ -746,6 +745,7 @@ static rc_t full_download( KDirectory *dir, fetch_ctx *ctx )
                     KClientHttpRelease ( http );
                 }
             }
+            URLBlockFini ( &url );
             KNSManagerRelease( kns_mgr );
         }
     }
