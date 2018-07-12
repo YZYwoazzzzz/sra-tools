@@ -659,14 +659,14 @@ static rc_t full_download( KDirectory *dir, fetch_ctx *ctx )
             (void)LOGERR( klogInt, rc, "KNSManagerMake() failed" );
         else
         {
-            struct URLBlock url;
-            rc = URLBlockInit( &url, ctx->url, string_size( ctx->url ) );
+            struct URLBlock block;
+            rc = URLBlockInit( &block, ctx->url, string_size( ctx->url ) );
             if ( rc == 0 )
             {
                 KClientHttp * http;
-                rc = url.tls ?
-                    KNSManagerMakeClientHttps( kns_mgr, &http, NULL, 0x01010000, &url.host, url.port ):
-                    KNSManagerMakeClientHttp( kns_mgr, &http, NULL, 0x01010000, &url.host, url.port );
+                rc = block.tls ?
+                    KNSManagerMakeClientHttps( kns_mgr, &http, NULL, 0x01010000, &block.host, block.port ):
+                    KNSManagerMakeClientHttp( kns_mgr, &http, NULL, 0x01010000, &block.host, block.port );
                 if ( rc == 0 )
                 {
                     KClientHttpRequest * req;
@@ -745,7 +745,7 @@ static rc_t full_download( KDirectory *dir, fetch_ctx *ctx )
                     KClientHttpRelease ( http );
                 }
             }
-            URLBlockFini ( &url );
+            URLBlockFini ( &block );
             KNSManagerRelease( kns_mgr );
         }
     }
