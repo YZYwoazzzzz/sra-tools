@@ -96,17 +96,31 @@ vdb-dump: makedb
 	@ rm -rf actual
 	@ mkdir -p actual
 	@ echo "testing vdb-dump..."
+	@ #
 	@ # output format
 	@ $(BINDIR)/vdb-dump SRR056386 -R 1 -C READ -f tab >actual/1.0.stdout && diff expected/1.0.stdout actual/1.0.stdout
 	@ $(BINDIR)/vdb-dump SRR056386 -R 1 -C READ -f tab -I >actual/1.1.stdout && diff expected/1.1.stdout actual/1.1.stdout
+	@ #
 	@ # nested databases
 	@ $(BINDIR)/vdb-dump -E data/NestedDatabase >actual/2.0.stdout && diff expected/2.0.stdout actual/2.0.stdout
 	@ $(BINDIR)/vdb-dump -T SUBDB_1.SUBSUBDB_1.TABLE1 data/NestedDatabase >actual/2.1.stdout && diff expected/2.1.stdout actual/2.1.stdout
 	@ $(BINDIR)/vdb-dump -T SUBDB_1.SUBSUBDB_2.TABLE2 data/NestedDatabase >actual/2.2.stdout && diff expected/2.2.stdout actual/2.2.stdout
+	@ #
+	@ # VDB-3654 original vs synhtesized qualities
+	@ # 	3.0 original
+	echo /sra/quality_type=\"raw_scores\" >tmp.kfg
+	VDB_CONFIG=$(SRCDIR) $(BINDIR)/vdb-dump SRR056386 -R 1 -C QUALITY >actual/3.0.stdout && diff expected/3.0.stdout actual/3.0.stdout
+	rm tmp.kfg
+	@ # 	3.1 syntyhesized
+	$(BINDIR)/vdb-dump SRR056386 -R 1 -C QUALITY >actual/3.1.stdout && diff expected/3.1.stdout actual/3.1.stdout
+	@ #
 	@ rm -rf actual
 	@ rm -rf data
 	@ python $(TOP)/build/check-exit-code.py $(BINDIR)/vdb-dump
 	@ echo "...all tests passed"
+
+onetest:
+	@ $(BINDIR)/vdb-dump SRR056386 -R 1 -C QUALITY
 
 .PHONY: kar
 
