@@ -1369,14 +1369,14 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                             if (rc == 0)
                                 break;
                             if (opos == last) {
-                                if (delayErr) {
+/*                              if (delayErr) {
                                     int ret = 0;
                                     rc_t rd_rc = 0;
                                     rc_t r2 = KFileGetTlsErr(file,
                                         &ret, &rd_rc);
                                     if (r2 == 0 && rd_rc != 0)
                                         KTLSStreamLogReadErr(ret, rd_rc);
-                                }
+                                }*/
                                 break;
                             }
                             last = opos;
