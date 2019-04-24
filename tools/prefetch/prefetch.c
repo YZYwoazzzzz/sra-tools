@@ -47,13 +47,15 @@
 #include <vfs/services-priv.h> /* KServiceNamesQueryExt */
 
 #include <kns/ascp.h> /* ascp_locate */
-#include <kns/manager.h>
-#include <kns/stream.h> /* KStreamRelease */
-#include <kns/kns-mgr-priv.h>
 #include <kns/http.h>
+#include <kns/manager.h>
+#include <kns/kns-mgr-priv.h>
+#include <kns/tls.h> /* KTLSStreamLogReadErr */
+#include <kns/stream.h> /* KStreamRelease */
 
 #include <kfs/file.h> /* KFile */
 #include <kfs/gzip.h> /* KFileMakeGzipForRead */
+#include <kfs/kfs-priv.h> /* KFileDelayErrReporting */
 #include <kfs/subfile.h> /* KFileMakeSubRead */
 #include <kfs/cacheteefile.h> /* KDirectoryMakeCacheTee */
 
@@ -97,6 +99,8 @@
 
 #define USE_CURL 0
 #define ALLOW_STRIP_QUALS 0
+
+#define VERS 0x01010000
 
 #define rcResolver   rcTree
 static bool NotFoundByResolver(rc_t rc) {
@@ -326,10 +330,9 @@ rc_t _KFileOpenRemote(const KFile **self, KNSManager *kns, const String *path,
             SILENT_RC ( rcExe, rcFile, rcConstructing, rcParam, rcWrongType );
 
     if ( reliable )
-        rc = KNSManagerMakeReliableHttpFile(kns,
-                                         self, NULL, 0x01010000, "%S", path);
+        rc = KNSManagerMakeReliableHttpFile(kns, self, NULL, VERS, "%S", path);
     else
-        rc = KNSManagerMakeHttpFile(kns, self, NULL, 0x01010000, "%S", path);
+        rc = KNSManagerMakeHttpFile(kns, self, NULL, VERS, "%S", path);
 
     return rc;
 }
@@ -1129,7 +1132,7 @@ static rc_t ResolvedLocal(const Resolved *self,
                 if (rc == 0) {
                     const KFile * file = NULL;
                     rc = KNSManagerMakeHttpFile(mane->kns, &file, NULL,
-                        0x01010000, "%s", path);
+                        VERS, "%s", path);
                     if (rc == 0)
                         rc = KFileSize(file, &sRemote);
                     RELEASE(KFile, file);
@@ -1279,36 +1282,35 @@ static rc_t MainDownloadHttpFile(Resolved *self,
     
     STSMSG(lvl, ("%S -> %s", & src, to));
     {
+        bool delayErr = true;
         bool reliable = ! self -> isUri;
-        ver_t http_vers = 0x01010000;
         KClientHttpRequest * kns_req = NULL;
         if ( reliable )
             rc = KNSManagerMakeReliableClientRequest ( mane -> kns,
-                & kns_req, http_vers, NULL, "%S", & src );
+                & kns_req, VERS, NULL, "%S", & src );
         else
             rc = KNSManagerMakeClientRequest ( mane -> kns,
-                & kns_req, http_vers, NULL, "%S", & src );
-        DISP_RC2 ( rc, "Cannot KNSManagerMakeClientRequest",
-                   & src . addr );
+                & kns_req, VERS, NULL, "%S", & src );
+        DISP_RC2 ( rc, "Cannot KNSManagerMakeClientRequest", src . addr );
 
         if ( rc == 0 ) {
             KClientHttpResult * rslt = NULL;
             rc = KClientHttpRequestGET ( kns_req, & rslt );
-            DISP_RC2 ( rc, "Cannot KClientHttpRequestGET",
-                       & src . addr );
+            DISP_RC2 ( rc, "Cannot KClientHttpRequestGET", src . addr );
 
             if ( rc == 0 ) {
                 KStream * s = NULL;
                 rc = KClientHttpResultGetInputStream ( rslt, & s );
                 DISP_RC2 ( rc, "Cannot KClientHttpResultGetInputStream",
-                           & src . addr );
+                    src . addr );
+
+/*              KClientHttpResultDelayErrReporting(rslt, delayErr); */
 
                 while ( rc == 0 ) {
                     rc = KStreamRead
                         ( s, mane -> buffer, mane -> bsize, & num_read );
                     if ( rc != 0 || num_read == 0) {
-                        DISP_RC2 ( rc, "Cannot KStreamRead",
-                                   & src . addr );
+                        DISP_RC2 ( rc, "Cannot KStreamRead", src . addr );
                         break;
                     }
 
@@ -1323,9 +1325,75 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                             rcFile, rcCopying, rcTransfer, rcIncomplete );
                     }
                     opos += num_writ;
+                    if (rc == 0)
+                        rc = Quitting();
                 }
 
                 RELEASE ( KStream, s );
+            }
+
+            if (rc != 0) {
+                uint64_t size = 0;
+                const KFile * file = NULL;
+                LOGMSG(klogInfo,
+                    "Failed to Read HTTP stream: switching to FileRead...");
+                if (reliable)
+                    rc = KNSManagerMakeReliableHttpFile(
+                        mane->kns, &file, NULL, VERS, "%S", &src);
+                else
+                    rc = KNSManagerMakeHttpFile(
+                        mane->kns, &file, NULL, VERS, "%S", &src);
+                if (rc == 0) {
+                    rc = KFileSize(file, &size);
+                    if (rc != 0)
+                        PLOGERR(klogErr, (klogErr, rc,
+                            "Cannot determine the size of $(name)", "name=%S",
+                            &src));
+
+/*                  KFileDelayErrReporting(file, delayErr); */
+                }
+
+                if (rc == 0) {
+                    uint64_t last = opos;
+                    while (opos < size) {
+                        rc_t rq = Quitting();
+                        if (rq != 0) {
+                            if (rc == 0)
+                                rc = rq;
+                            break;
+                        }
+                        rc = KFileRead(file, opos, mane->buffer, mane->bsize,
+                            &num_read);
+                        DISP_RC2(rc, "Cannot KFileRead", src.addr);
+                        if (num_read == 0) {
+                            if (rc == 0)
+                                break;
+                            if (opos == last) {
+                                if (delayErr) {
+                                    int ret = 0;
+                                    rc_t rd_rc = 0;
+                                    rc_t r2 = KFileGetTlsErr(file,
+                                        &ret, &rd_rc);
+                                    if (r2 == 0 && rd_rc != 0)
+                                        KTLSStreamLogReadErr(ret, rd_rc);
+                                }
+                                break;
+                            }
+                            last = opos;
+                        }
+                        if (rc != 0)
+                            continue;
+                        rc = KFileWriteAll(
+                            out, opos, mane->buffer, num_read, &num_writ);
+                        DISP_RC2(rc, "Cannot KFileWrite", to);
+                        if (rc == 0 && num_writ != num_read) {
+                            rc = RC(rcExe,
+                                rcFile, rcCopying, rcTransfer, rcIncomplete);
+                        }
+                        opos += num_writ;
+                    }
+                }
+                RELEASE(KFile, file);
             }
 
             RELEASE ( KClientHttpResult, rslt );
