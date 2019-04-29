@@ -64,6 +64,7 @@
 #include <klib/log.h> /* PLOGERR */
 #include <klib/out.h> /* KOutMsg */
 #include <klib/printf.h> /* string_printf */
+#include <klib/progressbar.h> /* destroy_progressbar */
 #include <klib/rc.h>
 #include <klib/status.h> /* STSMSG */
 #include <klib/text.h> /* String */
@@ -206,6 +207,7 @@ typedef struct {
     size_t minSize;
     size_t maxSize;
     uint64_t heartbeat;
+    bool progress;
 
     bool noAscp;
     bool noHttp;
@@ -1219,10 +1221,12 @@ static rc_t MainDownloadHttpFile(Resolved *self,
 {
     rc_t rc = 0;
     const KFile *in = NULL;
+    uint64_t size = 0;
     KFile *out = NULL;
     size_t num_read = 0;
     uint64_t opos = 0;
     size_t num_writ = 0;
+    struct progressbar * pb = NULL;
 
     const VPathStr * remote = NULL;
     String src;
@@ -1267,7 +1271,12 @@ static rc_t MainDownloadHttpFile(Resolved *self,
             if (rc != 0 && !self->isUri)
                 PLOGERR(klogInt, (klogInt, rc, "failed to open file "
                     "'$(path)'", "path=%S", & src));
+            else
+                rc = KFileSize(in, &size);
         }
+
+        if (mane->progress)
+            make_progressbar(&pb, 2);
 
         if (mane->stripQuals) {
             const KFile * kfile = NULL;
@@ -1334,13 +1343,15 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                     opos += num_writ;
                     if (rc == 0)
                         rc = Quitting();
+                    if (pb != NULL && size > 0)
+                        update_progressbar(pb, 10000 * opos / size);
                 }
 
                 RELEASE ( KStream, s );
             }
 
             if (rc != 0) {
-                uint64_t size = 0;
+                uint64_t first = opos;
                 const KFile * file = NULL;
                 LOGMSG(klogInfo,
                     "Failed to Read HTTP stream: switching to FileRead...");
@@ -1351,11 +1362,13 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                     rc = KNSManagerMakeHttpFile(
                         mane->kns, &file, NULL, VERS, "%S", &src);
                 if (rc == 0) {
-                    rc = KFileSize(file, &size);
-                    if (rc != 0)
-                        PLOGERR(klogErr, (klogErr, rc,
-                            "Cannot determine the size of $(name)", "name=%S",
-                            &src));
+                    if (size == 0) {
+                        rc = KFileSize(file, &size);
+                        if (rc != 0)
+                            PLOGERR(klogErr, (klogErr, rc,
+                               "Cannot determine the size of $(name)",
+                                "name=%S", &src));
+                    }
 
                     KFileDelayErrReporting(file, delayErr);
                 }
@@ -1400,6 +1413,8 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                                 rcFile, rcCopying, rcTransfer, rcIncomplete);
                         }
                         opos += num_writ;
+                        if (pb != NULL && size > 0)
+                            update_progressbar(pb, 10000 * opos / size);
                     }
                 }
                 RELEASE(KFile, file);
@@ -1413,8 +1428,13 @@ static rc_t MainDownloadHttpFile(Resolved *self,
 
     RELEASE(KFile, out);
 
+    if (pb != NULL && size > 0)
+        update_progressbar(pb, 10000 * opos / size);
+
     if (rc == 0 && !mane->dryRun)
         STSMSG(STS_INFO, ("%s (%ld)", to, opos));
+
+    destroy_progressbar(pb);
 
     return rc;
 }
@@ -3445,11 +3465,16 @@ static const char* OUT_DIR_USAGE[] = { "Save files to DIRECTORY/", NULL };
 static const char* OUT_FILE_USAGE[] = {
     "Write file to FILE when downloading a single file", NULL };
 
-#define HBEAT_OPTION "progress"
-#define HBEAT_ALIAS  "p"
+#define HBEAT_OPTION "ascp-progress"
+#define HBEAT_ALIAS  "P"
 static const char* HBEAT_USAGE[] = {
-    "Time period in minutes to display download progress",
+    "Time period in minutes to display download ascp progress",
     "(0: no progress), default: 1", NULL };
+
+#define PROGRESS_OPTION "http-progress"
+#define PROGRESS_ALIAS  "p"
+static const char* PROGRESS_USAGE[] = {
+    "Show http download progress", NULL };
 
 #define ROWS_OPTION "rows"
 #define ROWS_ALIAS  "R"
@@ -3505,6 +3530,7 @@ static OptDef OPTIONS[] = {
 ,{ SIZE_OPTION        , SIZE_ALIAS        , NULL, SIZE_USAGE  , 1, true ,false }
 ,{ FORCE_OPTION       , FORCE_ALIAS       , NULL, FORCE_USAGE , 1, true, false }
 ,{ HBEAT_OPTION       , HBEAT_ALIAS       , NULL, HBEAT_USAGE , 1, true, false }
+,{ PROGRESS_OPTION    , PROGRESS_ALIAS    , NULL,PROGRESS_USAGE,1, false,false }
 ,{ ELIM_QUALS_OPTION  , NULL             ,NULL,ELIM_QUALS_USAGE,1, false,false }
 ,{ CHECK_ALL_OPTION   , CHECK_ALL_ALIAS   ,NULL,CHECK_ALL_USAGE,1, false,false }
 ,{ LIST_OPTION        , LIST_ALIAS        , NULL, LIST_USAGE  , 1, false,false }
@@ -3729,7 +3755,19 @@ option_name = DRY_RUN_OPTION;
             }
             f = atof(val) * 60000;
             self->heartbeat = (uint64_t)f;
+            if (self->heartbeat > 0)
+                self->progress = true;
         }
+
+/* PROGRESS_OPTION */
+        rc = ArgsOptionCount(self->args, PROGRESS_OPTION, &pcount);
+        if (rc != 0) {
+            LOGERR(klogErr, rc, "Failure to get '" PROGRESS_OPTION "' argument");
+            break;
+        }
+
+        if (pcount > 0)
+            self->progress = true;
 
 /* ROWS_OPTION */
         rc = ArgsOptionCount(self->args, ROWS_OPTION, &pcount);
