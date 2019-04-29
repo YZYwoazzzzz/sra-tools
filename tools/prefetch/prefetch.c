@@ -1282,6 +1282,7 @@ static rc_t MainDownloadHttpFile(Resolved *self,
     
     STSMSG(lvl, ("%S -> %s", & src, to));
     {
+        rc_t r2 = 0;
         bool delayErr = true;
         bool reliable = ! self -> isUri;
         KClientHttpRequest * kns_req = NULL;
@@ -1292,6 +1293,11 @@ static rc_t MainDownloadHttpFile(Resolved *self,
             rc = KNSManagerMakeClientRequest ( mane -> kns,
                 & kns_req, VERS, NULL, "%S", & src );
         DISP_RC2 ( rc, "Cannot KNSManagerMakeClientRequest", src . addr );
+
+        r2 = KConfigReadBool(
+            mane->cfg, "/tools/prefetch/delay-tls-errors", &delayErr);
+        if (r2 != 0)
+            delayErr = true;
 
         if ( rc == 0 ) {
             KClientHttpResult * rslt = NULL;
@@ -1304,13 +1310,14 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                 DISP_RC2 ( rc, "Cannot KClientHttpResultGetInputStream",
                     src . addr );
 
-/*              KClientHttpResultDelayErrReporting(rslt, delayErr); */
+                KClientHttpResultDelayErrReporting(rslt, delayErr);
 
                 while ( rc == 0 ) {
                     rc = KStreamRead
                         ( s, mane -> buffer, mane -> bsize, & num_read );
                     if ( rc != 0 || num_read == 0) {
-                        DISP_RC2 ( rc, "Cannot KStreamRead", src . addr );
+                        if (!delayErr)
+                            DISP_RC2(rc, "Cannot KStreamRead", src.addr);
                         break;
                     }
 
@@ -1350,12 +1357,12 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                             "Cannot determine the size of $(name)", "name=%S",
                             &src));
 
-/*                  KFileDelayErrReporting(file, delayErr); */
+                    KFileDelayErrReporting(file, delayErr);
                 }
 
                 if (rc == 0) {
                     uint64_t last = opos;
-                    while (opos < size) {
+                    while (rc == 0 && opos < size) {
                         rc_t rq = Quitting();
                         if (rq != 0) {
                             if (rc == 0)
@@ -1364,19 +1371,21 @@ static rc_t MainDownloadHttpFile(Resolved *self,
                         }
                         rc = KFileRead(file, opos, mane->buffer, mane->bsize,
                             &num_read);
-                        DISP_RC2(rc, "Cannot KFileRead", src.addr);
+                        if (!delayErr)
+                            DISP_RC2(rc, "Cannot KFileRead", src.addr);
                         if (num_read == 0) {
                             if (rc == 0)
                                 break;
                             if (opos == last) {
-/*                              if (delayErr) {
+                                if (delayErr) {
                                     int ret = 0;
                                     rc_t rd_rc = 0;
+                                    bool handshake = false;
                                     rc_t r2 = KFileGetTlsErr(file,
-                                        &ret, &rd_rc);
+                                        &ret, &rd_rc, &handshake);
                                     if (r2 == 0 && rd_rc != 0)
-                                        KTLSStreamLogReadErr(ret, rd_rc);
-                                }*/
+                                        KTLSStreamLogErr(ret, rd_rc, handshake);
+                                }
                                 break;
                             }
                             last = opos;
